@@ -62,8 +62,14 @@ typedef struct H264ParseContext {
     int parse_last_mb;
     int64_t reference_dts;
     int last_frame_num, last_picture_structure;
+	int ext_err;
 } H264ParseContext;
 
+#define H264_EXT_PARSE_OK 0 
+#define H264_EXT_SEI_PIC_TIMING_PARSE_FAIL -1
+#define H264_EXT_MMCO_RESET -2
+#define H264_EXT_INVALID_POC -3
+#define H264_EXT_PPS_PARSE -4
 
 static int h264_find_frame_end(H264ParseContext *p, const uint8_t *buf,
                                int buf_size, void *logctx)
@@ -262,6 +268,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
     s->picture_structure = AV_PICTURE_STRUCTURE_UNKNOWN;
 
     ff_h264_sei_uninit(&p->sei);
+	p->ext_err = H264_EXT_PPS_PARSE;
     p->sei.frame_packing.arrangement_cancel_flag = -1;
 
     if (!buf_size)
@@ -352,11 +359,13 @@ static inline int parse_nal_units(AVCodecParserContext *s,
             if (pps_id >= MAX_PPS_COUNT) {
                 av_log(avctx, AV_LOG_ERROR,
                        "pps_id %u out of range\n", pps_id);
+				p->ext_err = H264_EXT_PPS_PARSE;
                 goto fail;
             }
             if (!p->ps.pps_list[pps_id]) {
                 av_log(avctx, AV_LOG_ERROR,
                        "non-existing PPS %u referenced\n", pps_id);
+			    p->ext_err = H264_EXT_PPS_PARSE;
                 goto fail;
             }
 
@@ -364,8 +373,10 @@ static inline int parse_nal_units(AVCodecParserContext *s,
             p->ps.pps = NULL;
             p->ps.sps = NULL;
             p->ps.pps_ref = av_buffer_ref(p->ps.pps_list[pps_id]);
-            if (!p->ps.pps_ref)
+            if (!p->ps.pps_ref){
+				p->ext_err = H264_EXT_PPS_PARSE;
                 goto fail;
+			}
             p->ps.pps = (const PPS*)p->ps.pps_ref->data;
             p->ps.sps = p->ps.pps->sps;
             sps       = p->ps.sps;
@@ -442,8 +453,10 @@ static inline int parse_nal_units(AVCodecParserContext *s,
             field_poc[0] = field_poc[1] = INT_MAX;
             ret = ff_h264_init_poc(field_poc, &s->output_picture_number, sps,
                              &p->poc, p->picture_structure, nal.ref_idc);
-            if (ret < 0)
+            if (ret < 0) {
+				p->ext_err = H264_EXT_INVALID_POC;
                 goto fail;
+			}
 
             /* Continue parsing to check if MMCO_RESET is present.
              * FIXME: MMCO_RESET could appear in non-first slice.
@@ -451,8 +464,10 @@ static inline int parse_nal_units(AVCodecParserContext *s,
              *        picture until encountering MMCO_RESET in a slice of it. */
             if (nal.ref_idc && nal.type != H264_NAL_IDR_SLICE) {
                 got_reset = scan_mmco_reset(s, &nal.gb, avctx);
-                if (got_reset < 0)
+                if (got_reset < 0) {
+					p->ext_err = H264_EXT_MMCO_RESET;
                     goto fail;
+				}
             }
 
             /* Set up the prev_ values for decoding POC of the next picture. */
@@ -475,6 +490,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
                 if (ret < 0) {
                     av_log(avctx, AV_LOG_ERROR, "Error processing the picture timing SEI\n");
                     p->sei.picture_timing.present = 0;
+					p->ext_err = H264_EXT_SEI_PIC_TIMING_PARSE_FAIL;
                 }
             }
 
