@@ -268,7 +268,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
     s->picture_structure = AV_PICTURE_STRUCTURE_UNKNOWN;
 
     ff_h264_sei_uninit(&p->sei);
-	p->ext_err = H264_EXT_PPS_PARSE;
+	p->ext_err = H264_EXT_PARSE_OK;
     p->sei.frame_packing.arrangement_cancel_flag = -1;
 
     if (!buf_size)
